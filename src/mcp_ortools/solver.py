@@ -49,7 +49,7 @@ class ORToolsSolver:
 
     def add_constraint(self, constraint: cp_model.Constraint) -> None:
         """Add a constraint to the model"""
-        self.model.AddConstraint(constraint)
+        self.model.Add(constraint)
 
     def set_objective(self, objective: Union[cp_model.LinearExpr, cp_model.IntVar], maximize: bool = True) -> None:
         """Set the optimization objective"""

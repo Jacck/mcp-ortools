@@ -1,214 +1,133 @@
 import asyncio
-import json
 import logging
-from typing import Dict, Any, Optional
-from .solver import ORToolsSolver, Solution
-from .parser import RCPSPParser, RCPSPExpressionBuilder
+from typing import List, Optional, Any
+from mcp.server import Server, NotificationOptions
+from mcp.server.models import InitializationOptions
+import mcp.server.stdio
+import mcp.types as types
+from mcp.shared.exceptions import McpError
 
-logging.basicConfig(level=logging.INFO)
+from .solver_manager import SolverManager, SolverError
+
 logger = logging.getLogger(__name__)
 
-class MCPServer:
-    """MCP Server implementation using OR-Tools"""
+async def serve() -> None:
+    """Main server function that handles the MCP protocol"""
+    logger.info("Starting OR-Tools MCP server")
     
-    def __init__(self):
-        self.solver = ORToolsSolver()
-        self.parser = RCPSPParser()
-        self.builder: Optional[RCPSPExpressionBuilder] = None
-        
-    async def handle_request(self, data: str) -> str:
-        """Handle incoming MCP requests"""
-        try:
-            request = json.loads(data)
-            command = request.get('command')
-            
-            handlers = {
-                'submit_model': self._handle_submit_model,
-                'solve_model': self._handle_solve_model,
-                'get_solution': self._handle_get_solution,
-                'set_parameter': self._handle_set_parameter,
-                'get_variable': self._handle_get_variable,
-                'get_solve_time': self._handle_get_solve_time,
-            }
-            
-            handler = handlers.get(command)
-            if handler:
-                response = await handler(request)
-            else:
-                response = {'status': 'ERROR', 'message': f'Unknown command: {command}'}
-                
-            return json.dumps(response)
-            
-        except Exception as e:
-            logger.exception("Error handling request")
-            return json.dumps({
-                'status': 'ERROR',
-                'message': str(e)
-            })
-            
-    async def _handle_submit_model(self, request: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle model submission"""
-        try:
-            model_str = request.get('model', '')
-            parsed_model = self.parser.parse(model_str)
-            
-            # Clear previous model
-            self.solver.clear()
-            
-            # Create expression builder with new model
-            self.builder = RCPSPExpressionBuilder(self.solver.model)
-            
-            # Build the model
-            variables = self.builder.build_rcpsp_model(
-                parsed_model['tasks'],
-                parsed_model['resource_capacities']
-            )
-            
-            return {
-                'status': 'SUCCESS',
-                'message': 'Model submitted successfully'
-            }
-            
-        except Exception as e:
-            logger.exception("Error submitting model")
-            return {
-                'status': 'ERROR',
-                'message': f'Error submitting model: {str(e)}'
-            }
-            
-    async def _handle_solve_model(self, request: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle model solving"""
-        try:
-            timeout = request.get('timeout')
-            solution = self.solver.solve(timeout)
-            
-            return {
-                'status': 'SUCCESS',
-                'solution': {
-                    'variables': solution.variables,
-                    'status': solution.status,
-                    'solve_time': solution.solve_time,
-                    'objective_value': solution.objective_value
-                }
-            }
-            
-        except Exception as e:
-            logger.exception("Error solving model")
-            return {
-                'status': 'ERROR',
-                'message': f'Error solving model: {str(e)}'
-            }
-            
-    async def _handle_get_solution(self, request: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle solution retrieval"""
-        if not self.solver.last_solution:
-            return {
-                'status': 'ERROR',
-                'message': 'No solution available'
-            }
-            
-        return {
-            'status': 'SUCCESS',
-            'solution': {
-                'variables': self.solver.last_solution.variables,
-                'status': self.solver.last_solution.status,
-                'solve_time': self.solver.last_solution.solve_time,
-                'objective_value': self.solver.last_solution.objective_value
-            }
-        }
-        
-    async def _handle_set_parameter(self, request: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle parameter setting"""
-        try:
-            name = request.get('name')
-            value = request.get('value')
-            
-            if not name:
-                return {
-                    'status': 'ERROR',
-                    'message': 'Parameter name is required'
-                }
-                
-            if value is None:
-                return {
-                    'status': 'ERROR',
-                    'message': 'Parameter value is required'
-                }
-                
-            self.solver.parameters[name] = value
-            return {
-                'status': 'SUCCESS',
-                'message': f'Parameter {name} set to {value}'
-            }
-            
-        except Exception as e:
-            return {
-                'status': 'ERROR',
-                'message': f'Error setting parameter: {str(e)}'
-            }
-            
-    async def _handle_get_variable(self, request: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle variable value retrieval"""
-        name = request.get('name')
-        if not self.solver.last_solution or name not in self.solver.last_solution.variables:
-            return {
-                'status': 'ERROR',
-                'message': f'Variable {name} not found in solution'
-            }
-            
-        return {
-            'status': 'SUCCESS',
-            'value': self.solver.last_solution.variables[name]
-        }
-        
-    async def _handle_get_solve_time(self, request: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle solve time retrieval"""
-        if not self.solver.last_solution:
-            return {
-                'status': 'ERROR',
-                'message': 'No solution available'
-            }
-            
-        return {
-            'status': 'SUCCESS',
-            'solve_time': self.solver.last_solution.solve_time
-        }
+    server = Server("ortools")
+    solver_mgr = SolverManager()
 
-async def handle_stdin_stdout():
-    """Handle MCP protocol communication via stdin/stdout"""
-    server = MCPServer()
-    
-    while True:
-        try:
-            # Read length
-            length_str = await asyncio.get_event_loop().run_in_executor(
-                None, input
+    @server.list_tools()
+    async def list_tools() -> List[types.Tool]:
+        return [
+            types.Tool(
+                name="submit_model",
+                description="Submit an optimization model in JSON format",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "model": {
+                            "type": "string",
+                            "description": "Model specification in JSON format"
+                        }
+                    },
+                    "required": ["model"]
+                }
+            ),
+            types.Tool(
+                name="solve_model",
+                description="Solve the current optimization model",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "timeout": {
+                            "type": ["number", "null"],
+                            "description": "Optional solve timeout in seconds"
+                        }
+                    }
+                }
+            ),
+            types.Tool(
+                name="get_solution",
+                description="Get the current solution if available",
+                inputSchema={
+                    "type": "object",
+                    "properties": {}
+                }
             )
-            length = int(length_str)
-            
-            # Read data
-            data = await asyncio.get_event_loop().run_in_executor(
-                None, lambda: input()
-            )
-            
-            # Process request
-            response = await server.handle_request(data)
-            
-            # Write response
-            print(len(response))
-            print(response)
-            
-        except EOFError:
-            break
-        except Exception as e:
-            logger.exception("Error in main loop")
-            response = json.dumps({
-                'status': 'ERROR',
-                'message': str(e)
-            })
-            print(len(response))
-            print(response)
+        ]
 
-def main():
+    @server.call_tool()
+    async def handle_call_tool(name: str, arguments: dict) -> List[types.TextContent]:
+        """Handle tool calls and map them to solver operations"""
+        logger.debug(f"Tool call: {name} with arguments {arguments}")
+        
+        try:
+            match name:
+                case "submit_model":
+                    model_str = arguments.get("model")
+                    if not model_str:
+                        raise McpError("Model required", "model parameter is required")
+                        
+                    valid, message = solver_mgr.parse_model(model_str)
+                    if not valid:
+                        raise McpError("Invalid model", message)
+                    
+                    logger.info("Model submitted successfully")
+                    return [types.TextContent(type="text", text="Model submitted successfully")]
+
+                case "solve_model":
+                    try:
+                        timeout = arguments.get("timeout")
+                        result = solver_mgr.solve(timeout)
+                        logger.info(f"Solve completed with status {result.get('status')}")
+                        return [types.TextContent(type="text", text=str(result))]
+                    except SolverError as e:
+                        raise McpError("Solver error", str(e))
+
+                case "get_solution":
+                    solution = solver_mgr.get_current_solution()
+                    if solution is None:
+                        raise McpError("No solution", "No solution is available")
+                    return [types.TextContent(type="text", text=str(solution))]
+
+                case _:
+                    raise McpError("Unknown tool", f"Tool {name} not found")
+
+        except McpError:
+            raise
+        except Exception as e:
+            logger.exception(f"Error in {name}")
+            raise McpError("Tool execution failed", str(e))
+
+    logger.info("Starting STDIO server")
+    async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
+        logger.info("STDIO server started")
+        await server.run(
+            read_stream,
+            write_stream,
+            InitializationOptions(
+                server_name="ortools",
+                server_version="0.1.0",
+                capabilities=server.get_capabilities(
+                    notification_options=NotificationOptions(),
+                    experimental_capabilities={},
+                ),
+            ),
+        )
+
+def main() -> int:
     """Main entry point"""
-    asyncio.run(handle_stdin_stdout())
+    try:
+        asyncio.run(serve())
+        return 0
+    except KeyboardInterrupt:
+        logger.info("Server stopped by user")
+        return 0
+    except Exception as e:
+        logger.exception("Server error")
+        return 1
+
+if __name__ == "__main__":
+    main()

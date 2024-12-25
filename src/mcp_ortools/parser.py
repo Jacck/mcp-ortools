@@ -3,82 +3,104 @@ from ortools.sat.python import cp_model
 import re
 import json
 
-class RCPSPParser:
-    """Parser for RCPSP models"""
+class ModelParser:
+    """Parser for generic optimization models"""
     
     def __init__(self):
-        self.tasks: List[Dict[str, Any]] = []
-        self.resource_capacities: List[int] = []
+        self.variables: Dict[str, Tuple[int, int]] = {}
+        self.constraints: List[str] = []
+        self.objective: Optional[Tuple[str, bool]] = None  # (expr, is_maximize)
         
     def parse(self, model_str: str) -> Dict[str, Any]:
-        """Parse RCPSP model string into components"""
+        """Parse model string into components"""
         try:
             data = json.loads(model_str)
-            self.tasks = data.get('tasks', [])
-            self.resource_capacities = data.get('resource_capacities', [])
+            
+            # Parse variables
+            for var in data.get('variables', []):
+                name = var['name']
+                domain = tuple(var['domain'])
+                self.variables[name] = domain
+            
+            # Parse constraints
+            self.constraints = data.get('constraints', [])
+            
+            # Parse objective
+            obj = data.get('objective')
+            if obj:
+                self.objective = (obj['expression'], obj.get('maximize', True))
             
             return {
-                'tasks': self.tasks,
-                'resource_capacities': self.resource_capacities
+                'variables': self.variables,
+                'constraints': self.constraints,
+                'objective': self.objective
             }
         except json.JSONDecodeError as e:
             raise ValueError(f"Invalid JSON format: {str(e)}")
 
-class RCPSPExpressionBuilder:
-    """Builds OR-Tools CP-SAT model for RCPSP"""
+class ExpressionBuilder:
+    """Builds OR-Tools expressions from parsed strings"""
     
-    def __init__(self, model: cp_model.CpModel):
-        self.model = model
-        self.variables: Dict[str, Any] = {}
+    def __init__(self, variables: Dict[str, cp_model.IntVar]):
+        self.variables = variables
         
-    def build_rcpsp_model(self, tasks: List[Dict[str, Any]], resource_capacities: List[int]) -> Dict[str, Any]:
-        """Build complete RCPSP model"""
-        num_tasks = len(tasks)
-        horizon = sum(task['duration'] for task in tasks)
+    def build_constraint(self, expr: str) -> cp_model.Constraint:
+        """Convert a constraint string to an OR-Tools constraint"""
+        # Split expression into left and right parts
+        parts = []
+        if '<=' in expr:
+            parts = expr.split('<=')
+            op = '<='
+        elif '>=' in expr:
+            parts = expr.split('>=')
+            op = '>='
+        elif '==' in expr:
+            parts = expr.split('==')
+            op = '=='
+        elif '!=' in expr:
+            parts = expr.split('!=')
+            op = '!='
+        elif '<' in expr:
+            parts = expr.split('<')
+            op = '<'
+        elif '>' in expr:
+            parts = expr.split('>')
+            op = '>'
+        else:
+            raise ValueError(f"No valid operator found in: {expr}")
+            
+        if len(parts) != 2:
+            raise ValueError(f"Invalid constraint format: {expr}")
+            
+        left, right = parts
         
-        # Create variables
-        task_starts = [
-            self.model.NewIntVar(0, horizon, f'task{i}_start') 
-            for i in range(num_tasks)
-        ]
-        task_ends = [
-            self.model.NewIntVar(0, horizon, f'task{i}_end')
-            for i in range(num_tasks)
-        ]
+        # Build left and right expressions
+        def build_expr(expr_str: str) -> cp_model.LinearExpr:
+            # Replace variable names with their OR-Tools variables
+            for var_name in sorted(self.variables.keys(), key=len, reverse=True):
+                expr_str = expr_str.replace(var_name, f"self.variables['{var_name}']")
+            return eval(expr_str)
         
-        # Create interval variables
-        task_intervals = [
-            self.model.NewIntervalVar(
-                task_starts[i],
-                tasks[i]['duration'],
-                task_ends[i],
-                f'interval{i}'
-            )
-            for i in range(num_tasks)
-        ]
+        left_expr = build_expr(left.strip())
+        right_expr = build_expr(right.strip())
         
-        # Add precedence constraints
-        for i, task in enumerate(tasks):
-            for pred in task['predecessors']:
-                self.model.Add(task_ends[pred] <= task_starts[i])
+        # Create constraint
+        if op == '<=':
+            return left_expr <= right_expr
+        elif op == '>=':
+            return left_expr >= right_expr
+        elif op == '==':
+            return left_expr == right_expr
+        elif op == '!=':
+            return left_expr != right_expr
+        elif op == '<':
+            return left_expr < right_expr
+        else:  # op == '>'
+            return left_expr > right_expr
         
-        # Add resource constraints
-        for res_id, capacity in enumerate(resource_capacities):
-            self.model.AddCumulative(
-                task_intervals,
-                [task['resources'][res_id] for task in tasks],
-                capacity
-            )
-        
-        # Store variables for solution extraction
-        self.variables = {
-            'task_starts': task_starts,
-            'task_ends': task_ends,
-            'task_intervals': task_intervals,
-            'makespan': task_ends[-1]  # Project completion time
-        }
-        
-        # Set objective to minimize makespan
-        self.model.Minimize(task_ends[-1])
-        
-        return self.variables
+    def build_objective(self, expr: str) -> cp_model.LinearExpr:
+        """Convert an objective expression to an OR-Tools linear expression"""
+        # Replace variable names with their OR-Tools variables
+        for var_name in sorted(self.variables.keys(), key=len, reverse=True):
+            expr = expr.replace(var_name, f"self.variables['{var_name}']")
+        return eval(expr)
