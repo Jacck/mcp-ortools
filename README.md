@@ -9,7 +9,6 @@ MCP-ORTools integrates Google's OR-Tools constraint programming solver with Larg
 - Set model parameters
 - Solve constraint satisfaction and optimization problems
 - Retrieve and analyze solutions
-- Handle Resource-Constrained Project Scheduling Problems (RCPSP)
 
 ## Installation
 
@@ -18,21 +17,22 @@ MCP-ORTools integrates Google's OR-Tools constraint programming solver with Larg
 pip install git+https://github.com/Jacck/mcp-ortools.git
 ```
 
-2. Configure Claude Desktop:
-Create a configuration file at `~/Library/Application/Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
+2. Configure Claude Desktop
+Create the configuration file at `%APPDATA%\Claude\claude_desktop_config.json` (Windows) or `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS):
 ```json
 {
   "mcpServers": {
     "ortools": {
-      "command": "mcp-ortools"
+      "command": "python",
+      "args": ["-m", "mcp_ortools.server"]
     }
   }
 }
 ```
 
-## Usage
+## Usage Example
 
-### Simple Optimization Problem
+Submit an optimization model:
 ```json
 {
     "variables": [
@@ -50,16 +50,23 @@ Create a configuration file at `~/Library/Application/Support/Claude/claude_desk
 }
 ```
 
-### RCPSP Problem
-```json
-{
-    "tasks": [
-        {"id": 0, "duration": 0, "predecessors": [], "resources": [0, 0]},
-        {"id": 1, "duration": 6, "predecessors": [0], "resources": [2, 1]},
-        {"id": 2, "duration": 1, "predecessors": [0], "resources": [1, 0]}
-    ],
-    "resource_capacities": [7, 4]
-}
+## Features
+
+- Full OR-Tools CP-SAT solver support
+- JSON-based model specification
+- Support for:
+  - Integer and boolean variables
+  - Linear constraints
+  - Optimization objectives
+  - Timeouts and solver parameters
+
+## Development
+
+To setup for development:
+```bash
+git clone https://github.com/Jacck/mcp-ortools.git
+cd mcp-ortools
+pip install -e .
 ```
 
 ## License
