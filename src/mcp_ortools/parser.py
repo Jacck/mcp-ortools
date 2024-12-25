@@ -1,106 +1,76 @@
-from typing import Dict, Any, Tuple, Optional, List, Set
+from typing import Dict, Any, Tuple, Optional, List
 from ortools.sat.python import cp_model
-import re
 import json
 
 class ModelParser:
-    """Parser for generic optimization models"""
-    
     def __init__(self):
-        self.variables: Dict[str, Tuple[int, int]] = {}
-        self.constraints: List[str] = []
-        self.objective: Optional[Tuple[str, bool]] = None  # (expr, is_maximize)
+        self.model = cp_model.CpModel()
+        self.variables = {}
         
-    def parse(self, model_str: str) -> Dict[str, Any]:
-        """Parse model string into components"""
+    def parse(self, model_str: str) -> Tuple[cp_model.CpModel, Dict[str, cp_model.IntVar]]:
         try:
             data = json.loads(model_str)
             
-            # Parse variables
+            # Create variables
             for var in data.get('variables', []):
                 name = var['name']
-                domain = tuple(var['domain'])
-                self.variables[name] = domain
+                domain = var.get('domain', [0, 1])
+                self.variables[name] = self.model.NewIntVar(domain[0], domain[1], name)
             
-            # Parse constraints
-            self.constraints = data.get('constraints', [])
+            # Add constraints
+            for constraint in data.get('constraints', []):
+                if '<=' in constraint:
+                    left, right = constraint.split('<=')
+                    self.model.Add(self._parse_expr(left) <= self._parse_expr(right))
+                elif '>=' in constraint:
+                    left, right = constraint.split('>=')
+                    self.model.Add(self._parse_expr(left) >= self._parse_expr(right))
+                elif '!=' in constraint:
+                    left, right = constraint.split('!=')
+                    self.model.Add(self._parse_expr(left) != self._parse_expr(right))
+                elif '==' in constraint:
+                    left, right = constraint.split('==')
+                    self.model.Add(self._parse_expr(left) == self._parse_expr(right))
             
-            # Parse objective
-            obj = data.get('objective')
-            if obj:
-                self.objective = (obj['expression'], obj.get('maximize', True))
+            # Handle objective if present
+            objective = data.get('objective')
+            if objective:
+                expr = objective.get('expression')
+                maximize = objective.get('maximize', True)
+                if maximize:
+                    self.model.Maximize(self._parse_expr(expr))
+                else:
+                    self.model.Minimize(self._parse_expr(expr))
             
-            return {
-                'variables': self.variables,
-                'constraints': self.constraints,
-                'objective': self.objective
-            }
-        except json.JSONDecodeError as e:
-            raise ValueError(f"Invalid JSON format: {str(e)}")
-
-class ExpressionBuilder:
-    """Builds OR-Tools expressions from parsed strings"""
+            return self.model, self.variables
+            
+        except Exception as e:
+            raise ValueError(f"Error parsing model: {str(e)}")
     
-    def __init__(self, variables: Dict[str, cp_model.IntVar]):
-        self.variables = variables
+    def _parse_expr(self, expr_str: str) -> cp_model.LinearExpr:
+        expr_str = expr_str.strip()
         
-    def build_constraint(self, expr: str) -> cp_model.Constraint:
-        """Convert a constraint string to an OR-Tools constraint"""
-        # Split expression into left and right parts
-        parts = []
-        if '<=' in expr:
-            parts = expr.split('<=')
-            op = '<='
-        elif '>=' in expr:
-            parts = expr.split('>=')
-            op = '>='
-        elif '==' in expr:
-            parts = expr.split('==')
-            op = '=='
-        elif '!=' in expr:
-            parts = expr.split('!=')
-            op = '!='
-        elif '<' in expr:
-            parts = expr.split('<')
-            op = '<'
-        elif '>' in expr:
-            parts = expr.split('>')
-            op = '>'
-        else:
-            raise ValueError(f"No valid operator found in: {expr}")
+        # Try parsing as integer
+        try:
+            return int(expr_str)
+        except ValueError:
+            pass
             
-        if len(parts) != 2:
-            raise ValueError(f"Invalid constraint format: {expr}")
+        # Check if it's a simple variable reference
+        if expr_str in self.variables:
+            return self.variables[expr_str]
             
-        left, right = parts
-        
-        # Build left and right expressions
-        def build_expr(expr_str: str) -> cp_model.LinearExpr:
-            # Replace variable names with their OR-Tools variables
-            for var_name in sorted(self.variables.keys(), key=len, reverse=True):
-                expr_str = expr_str.replace(var_name, f"self.variables['{var_name}']")
-            return eval(expr_str)
-        
-        left_expr = build_expr(left.strip())
-        right_expr = build_expr(right.strip())
-        
-        # Create constraint
-        if op == '<=':
-            return left_expr <= right_expr
-        elif op == '>=':
-            return left_expr >= right_expr
-        elif op == '==':
-            return left_expr == right_expr
-        elif op == '!=':
-            return left_expr != right_expr
-        elif op == '<':
-            return left_expr < right_expr
-        else:  # op == '>'
-            return left_expr > right_expr
-        
-    def build_objective(self, expr: str) -> cp_model.LinearExpr:
-        """Convert an objective expression to an OR-Tools linear expression"""
-        # Replace variable names with their OR-Tools variables
-        for var_name in sorted(self.variables.keys(), key=len, reverse=True):
-            expr = expr.replace(var_name, f"self.variables['{var_name}']")
-        return eval(expr)
+        # Handle arithmetic expressions
+        if '+' in expr_str:
+            left, right = expr_str.split('+', 1)
+            return self._parse_expr(left) + self._parse_expr(right)
+        elif '-' in expr_str and not expr_str.startswith('-'):
+            left, right = expr_str.split('-', 1)
+            return self._parse_expr(left) - self._parse_expr(right)
+        elif expr_str.startswith('-'):
+            return -self._parse_expr(expr_str[1:])
+        elif '*' in expr_str:
+            coeff, var = expr_str.split('*', 1)
+            return int(coeff.strip()) * self._parse_expr(var)
+            
+        raise ValueError(f"Unable to parse expression: {expr_str}")
